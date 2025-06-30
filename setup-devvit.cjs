@@ -25,6 +25,29 @@ function updateDevvitName() {
     fs.writeFileSync(devvitYamlPath, yaml.stringify(parsedYaml));
     console.log(`Updated app name to bolt-${suffix}`);
   }
+
+  // Update package.json dev:devvit script to use the correct app name
+  const packageJsonPath = path.join(process.cwd(), 'package.json');
+  const packageJsonContent = fs.readFileSync(packageJsonPath, 'utf8');
+  const packageJson = JSON.parse(packageJsonContent);
+  
+  if (packageJson.scripts && packageJson.scripts['dev:devvit']) {
+    const currentScript = packageJson.scripts['dev:devvit'];
+    // Only update if it contains YOUR_SUBREDDIT_NAME (meaning subreddit is configured)
+    if (currentScript.includes('YOUR_SUBREDDIT_NAME')) {
+      // Keep the subreddit name but use the correct app name format
+      packageJson.scripts['dev:devvit'] = currentScript;
+    } else {
+      // Extract subreddit name and update with correct app name
+      const subredditMatch = currentScript.match(/devvit playtest (.+)/);
+      if (subredditMatch) {
+        const subredditName = subredditMatch[1];
+        packageJson.scripts['dev:devvit'] = `devvit playtest ${subredditName}`;
+      }
+    }
+    
+    fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+  }
 }
 
 async function runChecks() {
@@ -79,7 +102,7 @@ async function runChecks() {
 
 async function main() {
   try {
-    // Step 1: Update devvit.yaml name
+    // Step 1: Update devvit.yaml name and sync package.json
     updateDevvitName();
 
     // Step 2: Run checks
