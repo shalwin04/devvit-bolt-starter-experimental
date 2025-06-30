@@ -1,323 +1,276 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Keyboard } from './Keyboard';
-import { LetterState, CheckResponse } from '../shared/types/game';
-import packageJson from '../../package.json';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { OracleCharacter } from './components/OracleCharacter';
+import { FlyComponent } from './components/FlyComponent';
+import { ProphecyDisplay } from './components/ProphecyDisplay';
+import { GameInstructions } from './components/GameInstructions';
+import { NetCursor } from './components/NetCursor';
 
-const WORD_LENGTH = 5;
-const MAX_GUESSES = 6;
+type GameStage = 'sleeping' | 'awakening' | 'fly-hunting' | 'fly-caught' | 'feeding' | 'prophecy-brewing' | 'prophecy-reveal';
 
-interface Tile {
-  letter: string;
-  state: LetterState;
+interface FlyPosition {
+  x: number;
+  y: number;
 }
-
-const icons: Record<LetterState, string | null> = {
-  correct: '🟩',
-  present: '🟨',
-  absent: '⬜',
-  initial: null,
-};
-
-const genResultGrid = (currentBoard: Tile[][], lastRowIndex: number): string => {
-  return currentBoard
-    .slice(0, lastRowIndex + 1)
-    .map((row) => row.map((tile) => icons[tile.state] || ' ').join(''))
-    .join('\n');
-};
-
-function extractSubredditName(): string | null {
-  const devCommand = packageJson.scripts?.['dev:devvit'];
-
-  if (!devCommand || !devCommand.includes('devvit playtest')) {
-    console.warn('"dev:devvit" script is missing or malformed.');
-    return null;
-  }
-
-  // Match the args after 'devvit playtest'
-  const argsMatch = devCommand.match(/devvit\s+playtest\s+(.*)/);
-  if (!argsMatch || !argsMatch[1]) {
-    console.warn('Could not parse arguments in dev:devvit script.');
-    return null;
-  }
-
-  const args = argsMatch[1].trim().split(/\s+/);
-
-  // Find the first token that is not a flag (doesn't start with "-" or "--")
-  const subreddit = args.find((arg) => !arg.startsWith('-'));
-
-  if (!subreddit) {
-    console.warn('No subreddit name found in dev:devvit command.');
-    return null;
-  }
-
-  return subreddit;
-}
-
-const Banner = () => {
-  const subreddit = extractSubredditName();
-  if (!subreddit) {
-    return (
-      <div className="w-full bg-red-600 text-white p-4 text-center mb-4">
-        Please visit your playtest subreddit to play the game with network functionality.
-      </div>
-    );
-  }
-
-  const subredditUrl = `https://www.reddit.com/r/${subreddit}`;
-
-  return (
-    <div className="w-full bg-red-600 text-white p-4 text-center mb-4">
-      Please visit{' '}
-      <a
-        href={subredditUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="underline font-bold"
-      >
-        r/{subreddit}
-      </a>{' '}
-      to play the game with network functionality. Remember to create a post from the three dots
-      (beside the mod tools button).
-    </div>
-  );
-};
 
 export const Game: React.FC = () => {
-  const [board, setBoard] = useState<Tile[][]>(
-    Array.from({ length: MAX_GUESSES }, () =>
-      Array.from({ length: WORD_LENGTH }, () => ({
-        letter: '',
-        state: 'initial' as LetterState,
-      }))
-    )
-  );
-  const [currentRowIndex, setCurrentRowIndex] = useState(0);
-  const [currentColIndex, setCurrentColIndex] = useState(0);
-  const [letterStates, setLetterStates] = useState<Record<string, LetterState>>({});
-  const [message, setMessage] = useState('');
-  const [shakeRowIndex, setShakeRowIndex] = useState(-1);
-  const [success, setSuccess] = useState(false);
-  const [allowInput, setAllowInput] = useState(true);
-  const [grid, setGrid] = useState('');
-  const [showBanner, setShowBanner] = useState(false);
+  const [gameStage, setGameStage] = useState<GameStage>('sleeping');
+  const [rubCount, setRubCount] = useState(0);
+  const [flyPosition, setFlyPosition] = useState<FlyPosition>({ x: 200, y: 150 });
+  const [flyCaught, setFlyCaught] = useState(false);
+  const [prophecy, setProphecy] = useState('');
+  const [isRubbing, setIsRubbing] = useState(false);
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [showNetCursor, setShowNetCursor] = useState(false);
+  const [draggedFly, setDraggedFly] = useState(false);
+  const [oracleAwake, setOracleAwake] = useState(false);
+  const [mouthOpen, setMouthOpen] = useState(false);
+  
+  const gameAreaRef = useRef<HTMLDivElement>(null);
+  const flyIntervalRef = useRef<NodeJS.Timeout>();
 
+  // Move fly randomly
   useEffect(() => {
-    const hostname = window.location.hostname;
-    setShowBanner(!hostname.endsWith('devvit.net'));
-  }, []);
-
-  const showMessage = useCallback((msg: string, time = 2000) => {
-    setMessage(msg);
-    if (time > 0) {
-      setTimeout(() => {
-        setMessage('');
-      }, time);
+    if (gameStage === 'fly-hunting' && !flyCaught) {
+      flyIntervalRef.current = setInterval(() => {
+        setFlyPosition({
+          x: Math.random() * 400 + 50,
+          y: Math.random() * 300 + 100,
+        });
+      }, 2000);
     }
-  }, []);
-
-  const shake = useCallback(() => {
-    setShakeRowIndex(currentRowIndex);
-    setTimeout(() => {
-      setShakeRowIndex(-1);
-    }, 1000);
-  }, [currentRowIndex]);
-
-  const onKey = useCallback(
-    async (key: string) => {
-      if (!allowInput || success) return;
-
-      const currentBoardRow = board[currentRowIndex];
-      if (!currentBoardRow) return; // Should not happen
-
-      if (/^[a-zA-Z]$/.test(key) && key.length === 1) {
-        if (currentColIndex < WORD_LENGTH) {
-          const newBoard = board.map((row) => [...row]); // Create a deep copy
-          const tileToUpdate = newBoard[currentRowIndex]?.[currentColIndex];
-          if (tileToUpdate) {
-            tileToUpdate.letter = key.toLowerCase();
-            tileToUpdate.state = 'initial';
-            setBoard(newBoard);
-            setCurrentColIndex(currentColIndex + 1);
-          }
-        }
-      } else if (key === 'Backspace') {
-        if (currentColIndex > 0) {
-          const newBoard = board.map((row) => [...row]);
-          const tileToUpdate = newBoard[currentRowIndex]?.[currentColIndex - 1];
-          if (tileToUpdate) {
-            tileToUpdate.letter = '';
-            tileToUpdate.state = 'initial';
-            setBoard(newBoard);
-            setCurrentColIndex(currentColIndex - 1);
-          }
-        }
-      } else if (key === 'Enter') {
-        if (currentColIndex === WORD_LENGTH) {
-          const guess = currentBoardRow.map((tile) => tile.letter).join('');
-
-          setAllowInput(false);
-          try {
-            const response = await fetch('/api/check', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ guess }),
-            });
-            const result = (await response.json()) as CheckResponse;
-
-            if (result.status === 'error') {
-              showMessage(result.message || 'Error checking word');
-              setAllowInput(true);
-              return;
-            }
-
-            // status is 'success' from here
-            if (result.exists === false) {
-              shake();
-              showMessage('Not in word list');
-              setAllowInput(true);
-              return;
-            }
-
-            const newBoard = board.map((row) => [...row]);
-            const newLetterStates = { ...letterStates };
-            const serverCheckedRow = newBoard[currentRowIndex];
-
-            if (serverCheckedRow) {
-              result.correct.forEach((letterResult, i) => {
-                const tile = serverCheckedRow[i];
-                if (tile) {
-                  tile.state = letterResult;
-                  if (tile.letter) {
-                    const letterKey = tile.letter;
-                    const currentKeyState = newLetterStates[letterKey];
-
-                    if (letterResult === 'correct') {
-                      newLetterStates[letterKey] = 'correct';
-                    } else if (letterResult === 'present' && currentKeyState !== 'correct') {
-                      newLetterStates[letterKey] = 'present';
-                    } else if (
-                      letterResult === 'absent' &&
-                      currentKeyState !== 'correct' &&
-                      currentKeyState !== 'present'
-                    ) {
-                      newLetterStates[letterKey] = 'absent';
-                    } else if (!currentKeyState) {
-                      // If no state yet, assign current result
-                      newLetterStates[letterKey] = letterResult;
-                    }
-                  }
-                }
-              });
-              setBoard(newBoard);
-              setLetterStates(newLetterStates);
-            }
-
-            if (result.solved) {
-              setSuccess(true);
-              setTimeout(() => {
-                if (
-                  newBoard &&
-                  typeof currentRowIndex === 'number' &&
-                  currentRowIndex < newBoard.length
-                ) {
-                  setGrid(genResultGrid(newBoard, currentRowIndex));
-                }
-                showMessage(
-                  ['Genius', 'Magnificent', 'Impressive', 'Splendid', 'Great', 'Phew'][
-                    currentRowIndex
-                  ] || 'Well Done!',
-                  -1
-                );
-              }, 1600);
-            } else if (currentRowIndex < MAX_GUESSES - 1) {
-              setCurrentRowIndex(currentRowIndex + 1);
-              setCurrentColIndex(0);
-              setTimeout(() => setAllowInput(true), 1600);
-            } else {
-              showMessage(`Game Over! The word was: TODO - get word from server`, -1); // Placeholder for actual word
-              setTimeout(() => setAllowInput(false), 1600);
-            }
-          } catch (error) {
-            console.error('Error checking word:', error);
-            showMessage('Network error, please try again.');
-            setAllowInput(true);
-          }
-        } else {
-          shake();
-          showMessage('Not enough letters');
-        }
+    return () => {
+      if (flyIntervalRef.current) {
+        clearInterval(flyIntervalRef.current);
       }
-    },
-    [allowInput, success, currentColIndex, board, currentRowIndex, letterStates, shake, showMessage]
-  );
+    };
+  }, [gameStage, flyCaught]);
 
+  // Track mouse position
   useEffect(() => {
-    const handleKeyup = (e: KeyboardEvent) => {
-      void onKey(e.key); // Using void as onKey is async but we don't need to await its result here
+    const handleMouseMove = (e: MouseEvent) => {
+      setMousePosition({ x: e.clientX, y: e.clientY });
     };
-    window.addEventListener('keyup', handleKeyup);
-    return () => {
-      window.removeEventListener('keyup', handleKeyup);
-    };
-  }, [onKey]);
-
-  useEffect(() => {
-    const onResize = () => {
-      document.body.style.setProperty('--vh', `${window.innerHeight}px`);
-    };
-    window.addEventListener('resize', onResize);
-    onResize();
-    return () => {
-      window.removeEventListener('resize', onResize);
-    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
+
+  const handleEyeRub = useCallback(() => {
+    if (gameStage !== 'sleeping') return;
+    
+    setIsRubbing(true);
+    setRubCount(prev => {
+      const newCount = prev + 1;
+      if (newCount >= 6) {
+        setTimeout(() => {
+          setGameStage('awakening');
+          setOracleAwake(true);
+          setTimeout(() => {
+            setGameStage('fly-hunting');
+            setShowNetCursor(true);
+          }, 3000);
+        }, 500);
+      }
+      return newCount;
+    });
+    
+    setTimeout(() => setIsRubbing(false), 200);
+  }, [gameStage]);
+
+  const handleFlyCatch = useCallback(() => {
+    if (gameStage !== 'fly-hunting' || flyCaught) return;
+    
+    setFlyCaught(true);
+    setShowNetCursor(false);
+    setDraggedFly(true);
+    setGameStage('fly-caught');
+    setMouthOpen(true);
+    
+    setTimeout(() => {
+      setGameStage('feeding');
+    }, 1000);
+  }, [gameStage, flyCaught]);
+
+  const handleFlyFeed = useCallback(async () => {
+    if (gameStage !== 'feeding') return;
+    
+    setDraggedFly(false);
+    setMouthOpen(false);
+    setGameStage('prophecy-brewing');
+    
+    try {
+      const response = await fetch('/api/prophecy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fed: 'fly',
+          rubCount,
+          oracleSkin: 'Classic Oracle'
+        }),
+      });
+      
+      const result = await response.json();
+      
+      setTimeout(() => {
+        setProphecy(result.oracle || 'The prophecy is unclear... try again.');
+        setGameStage('prophecy-reveal');
+      }, 3000);
+    } catch (error) {
+      setTimeout(() => {
+        setProphecy('The oracle choked on the fly. Your future remains mysterious.');
+        setGameStage('prophecy-reveal');
+      }, 3000);
+    }
+  }, [gameStage, rubCount]);
+
+  const resetGame = useCallback(() => {
+    setGameStage('sleeping');
+    setRubCount(0);
+    setFlyCaught(false);
+    setProphecy('');
+    setOracleAwake(false);
+    setMouthOpen(false);
+    setDraggedFly(false);
+    setShowNetCursor(false);
+    setFlyPosition({ x: 200, y: 150 });
+  }, []);
+
+  const getCurrentInstruction = () => {
+    switch (gameStage) {
+      case 'sleeping':
+        return 'Rub His Eyes to Wake Him';
+      case 'awakening':
+        return 'The Oracle Has Awakened...';
+      case 'fly-hunting':
+        return 'Catch the Fly With Your Net!';
+      case 'fly-caught':
+        return 'The Oracle Hungers...';
+      case 'feeding':
+        return 'Drag the Fly Into His Mouth!';
+      case 'prophecy-brewing':
+        return 'Prophecy Brewing...';
+      case 'prophecy-reveal':
+        return 'Your Fate is Revealed!';
+      default:
+        return '';
+    }
+  };
 
   return (
-    <div className="flex flex-col h-full items-center pt-2 pb-2 box-border">
-      {showBanner && <Banner />}
-      {message && (
-        <div className="message">
-          {message}
-          {grid && <pre className="text-xs whitespace-pre-wrap">{grid}</pre>}
-        </div>
-      )}
-      <header className="w-full max-w-md px-2">
-        <h1 className="text-4xl font-bold tracking-wider my-2">Word Guesser</h1>
-      </header>
-
-      <div id="board" className="mb-4">
-        {board.map((row, rowIndex) => (
-          <div
-            key={rowIndex}
-            className={`row ${shakeRowIndex === rowIndex ? 'shake' : ''} ${
-              success && currentRowIndex === rowIndex ? 'jump' : ''
-            }`}
-          >
-            {row.map((tile, tileIndex) => (
-              <div
-                key={tileIndex}
-                className={`tile ${tile.letter ? 'filled' : ''} ${tile.state !== 'initial' ? 'revealed' : ''}`}
-              >
-                <div className="front" style={{ transitionDelay: `${tileIndex * 300}ms` }}>
-                  {tile.letter}
-                </div>
-                <div
-                  className={`back ${tile.state}`}
-                  style={{
-                    transitionDelay: `${tileIndex * 300}ms`,
-                    animationDelay: `${tileIndex * 100}ms`,
-                  }}
-                >
-                  {tile.letter}
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
+    <div 
+      ref={gameAreaRef}
+      className="relative w-full h-screen bg-gradient-to-b from-purple-900 via-indigo-900 to-black overflow-hidden"
+      style={{ 
+        cursor: showNetCursor ? 'none' : 'default',
+        fontFamily: '"Press Start 2P", monospace'
+      }}
+    >
+      {/* CRT Static Background */}
+      <div className="absolute inset-0 opacity-10">
+        <div className="w-full h-full bg-gradient-to-r from-transparent via-white to-transparent animate-pulse"></div>
       </div>
-      <Keyboard onKey={onKey} letterStates={letterStates} />
+
+      {/* Pixel Grid Overlay */}
+      <div 
+        className="absolute inset-0 opacity-5"
+        style={{
+          backgroundImage: `
+            linear-gradient(90deg, #fff 1px, transparent 1px),
+            linear-gradient(180deg, #fff 1px, transparent 1px)
+          `,
+          backgroundSize: '4px 4px'
+        }}
+      ></div>
+
+      {/* Game Instructions */}
+      <GameInstructions instruction={getCurrentInstruction()} />
+
+      {/* Oracle Character */}
+      <OracleCharacter
+        isAwake={oracleAwake}
+        isRubbing={isRubbing}
+        mouthOpen={mouthOpen}
+        onEyeRub={handleEyeRub}
+        gameStage={gameStage}
+      />
+
+      {/* Fly Component */}
+      <AnimatePresence>
+        {(gameStage === 'fly-hunting' || gameStage === 'fly-caught' || gameStage === 'feeding') && !draggedFly && (
+          <FlyComponent
+            position={flyPosition}
+            caught={flyCaught}
+            onCatch={handleFlyCatch}
+            onFeed={handleFlyFeed}
+            gameStage={gameStage}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Dragged Fly */}
+      <AnimatePresence>
+        {draggedFly && (
+          <motion.div
+            className="fixed pointer-events-none z-50"
+            style={{
+              left: mousePosition.x - 10,
+              top: mousePosition.y - 10,
+            }}
+            initial={{ scale: 0 }}
+            animate={{ scale: 1, rotate: [0, 10, -10, 0] }}
+            exit={{ scale: 0 }}
+            transition={{ duration: 0.2, rotate: { repeat: Infinity, duration: 0.5 } }}
+          >
+            <div className="w-5 h-5 bg-green-500 rounded-full border-2 border-green-300 shadow-lg">
+              <div className="w-1 h-1 bg-red-500 rounded-full mx-auto mt-1"></div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Net Cursor */}
+      {showNetCursor && <NetCursor position={mousePosition} />}
+
+      {/* Prophecy Display */}
+      <AnimatePresence>
+        {gameStage === 'prophecy-brewing' && (
+          <motion.div
+            className="absolute inset-0 flex items-center justify-center z-40"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="text-center">
+              <motion.div
+                className="text-green-400 text-lg mb-4"
+                animate={{ opacity: [1, 0.5, 1] }}
+                transition={{ repeat: Infinity, duration: 1 }}
+              >
+                [CHEWING FLY...]
+              </motion.div>
+              <motion.div
+                className="text-yellow-400 text-lg"
+                animate={{ opacity: [1, 0.5, 1] }}
+                transition={{ repeat: Infinity, duration: 1.5, delay: 0.5 }}
+              >
+                [PROPHECY BREWING...]
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Prophecy Reveal */}
+      <ProphecyDisplay
+        prophecy={prophecy}
+        visible={gameStage === 'prophecy-reveal'}
+        onReset={resetGame}
+      />
+
+      {/* Debug Info */}
+      <div className="absolute top-4 left-4 text-xs text-white opacity-50">
+        Stage: {gameStage} | Rubs: {rubCount}
+      </div>
     </div>
   );
 };
